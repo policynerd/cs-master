@@ -40,7 +40,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <footer className="site-footer">
           <div className="wrap">
             <span>
-              {org.name} · Office of the Clerk
+              {org.name} · Office of the Clerk · <Link href="/admin">Staff sign-in</Link>
             </span>
             <span>
               Meeting times are shown in {org.timezone.replace("_", " ")} time. Agendas may be amended up to
