@@ -367,3 +367,47 @@ model PublicComment {
 
   @@index([meetingId, status])
 }
+
+// ---------------------------------------------------------------------------
+// Staff access and the audit trail
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  /// Manages staff accounts and organization settings, plus everything a clerk can do.
+  ADMIN
+  /// Creates meetings, builds and publishes agendas, records votes and minutes.
+  CLERK
+}
+
+/// A staff member allowed into the clerk workspace. Sign-in is invite-only:
+/// an identity-provider login is accepted only when its email matches an
+/// active row here.
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String?
+  role         UserRole     @default(CLERK)
+  isActive     Boolean      @default(true)
+  lastLoginAt  DateTime?
+  auditEvents  AuditEvent[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+/// Append-only record of every change made in the clerk workspace.
+model AuditEvent {
+  id          String    @id @default(cuid())
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// Machine-readable action, e.g. "agenda.publish" or "vote.record".
+  action      String
+  entityType  String
+  entityId    String
+  /// Human-readable description shown in the activity log.
+  summary     String
+  data        Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([createdAt])
+}

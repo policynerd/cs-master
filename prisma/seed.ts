@@ -54,6 +54,8 @@ function nextWeekday(days: number, weekday: number, hour: number): Date {
 
 async function reset() {
   await prisma.$transaction([
+    prisma.auditEvent.deleteMany(),
+    prisma.user.deleteMany(),
     prisma.publicComment.deleteMany(),
     prisma.voteRecord.deleteMany(),
     prisma.motion.deleteMany(),
@@ -122,6 +124,14 @@ async function main() {
       specialNoticeHours: 24,
       emergencyNoticeHours: 1,
     },
+  });
+
+  // -- Staff (sign in locally with DEV_LOGIN=true) ------------------------------
+  await prisma.user.createMany({
+    data: [
+      { email: "admin@aldercreek.example", name: "Jordan Ellis", role: "ADMIN" },
+      { email: "clerk@aldercreek.example", name: "Sam Whitmore", role: "CLERK" },
+    ],
   });
 
   // -- Bodies ---------------------------------------------------------------
