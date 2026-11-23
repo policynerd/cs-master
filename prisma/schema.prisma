@@ -1,0 +1,369 @@
+// Board Portal data model.
+//
+// Built for public bodies: boards, commissions, councils and their committees
+// that meet under open-meeting rules. The model covers four jobs:
+//   1. Who serves      — bodies, seats, appointments and terms
+//   2. When they meet  — meetings, public notice and agenda publication
+//   3. What they decide — agenda items, motions and roll-call votes
+//   4. The record       — attendance, minutes and public comment
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Organization settings (one row). Notice rules vary by jurisdiction, so the
+// minimum notice periods live here instead of in code.
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id                    String   @id @default(cuid())
+  name                  String
+  shortName             String?
+  timezone              String   @default("America/New_York")
+  /// Minimum public notice before a regular meeting, in hours (e.g. 72).
+  regularNoticeHours    Int      @default(72)
+  /// Minimum public notice before a special meeting, in hours (e.g. 24).
+  specialNoticeHours    Int      @default(24)
+  /// Emergency meetings usually have a shorter or no notice floor.
+  emergencyNoticeHours  Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// 1. Who serves
+// ---------------------------------------------------------------------------
+
+enum BodyType {
+  COUNCIL
+  BOARD
+  COMMISSION
+  COMMITTEE
+  AUTHORITY
+  TASK_FORCE
+}
+
+model Body {
+  id            String    @id @default(cuid())
+  slug          String    @unique
+  name          String
+  type          BodyType
+  description   String?
+  /// Statute, charter section or resolution that created the body.
+  authority     String?
+  /// Number of voting seats; used to compute quorum and vacancies.
+  seatCount     Int
+  /// Votes needed for a quorum. Defaults to a simple majority of seats when null.
+  quorum        Int?
+  /// Brand accent token name used by the UI (navy, crimson, forest, gold, cobalt, amber, slate).
+  accent        String    @default("navy")
+  /// Committees can sit under a parent board or council.
+  parentId      String?
+  parent        Body?     @relation("BodyHierarchy", fields: [parentId], references: [id])
+  children      Body[]    @relation("BodyHierarchy")
+  isActive      Boolean   @default(true)
+  seats         Seat[]
+  meetings      Meeting[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Person {
+  id           String         @id @default(cuid())
+  firstName    String
+  lastName     String
+  honorific    String?
+  /// Public-facing title, e.g. "District 3 Representative".
+  title        String?
+  bio          String?
+  /// Private contact details. Never rendered on the public portal.
+  email        String?        @unique
+  phone        String?
+  seats        Seat[]
+  attendance   Attendance[]
+  votes        VoteRecord[]
+  motionsMade  Motion[]       @relation("MovedBy")
+  seconds      Motion[]       @relation("SecondedBy")
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+enum SeatRole {
+  CHAIR
+  VICE_CHAIR
+  MEMBER
+  SECRETARY
+  EX_OFFICIO
+  ALTERNATE
+}
+
+/// One appointment of a person to a body for a term. A vacancy is a body with
+/// fewer active voting seats than `Body.seatCount`.
+model Seat {
+  id            String    @id @default(cuid())
+  bodyId        String
+  body          Body      @relation(fields: [bodyId], references: [id], onDelete: Cascade)
+  personId      String
+  person        Person    @relation(fields: [personId], references: [id])
+  role          SeatRole  @default(MEMBER)
+  /// Seat label, e.g. "District 2" or "At-Large Seat B".
+  seatLabel     String?
+  isVoting      Boolean   @default(true)
+  appointedBy   String?
+  termStart     DateTime
+  termEnd       DateTime?
+  /// Set when someone leaves before the term ends.
+  endedAt       DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([bodyId, termEnd])
+}
+
+// ---------------------------------------------------------------------------
+// 2. When they meet
+// ---------------------------------------------------------------------------
+
+enum MeetingType {
+  REGULAR
+  SPECIAL
+  EMERGENCY
+  WORKSHOP
+  PUBLIC_HEARING
+}
+
+enum MeetingStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  ADJOURNED
+  CANCELLED
+}
+
+model Meeting {
+  id                 String          @id @default(cuid())
+  bodyId             String
+  body               Body            @relation(fields: [bodyId], references: [id], onDelete: Cascade)
+  title              String?
+  type               MeetingType     @default(REGULAR)
+  status             MeetingStatus   @default(DRAFT)
+  startsAt           DateTime
+  endsAt             DateTime?
+  location           String?
+  address            String?
+  virtualUrl         String?
+  livestreamUrl      String?
+  recordingUrl       String?
+  /// When public notice was posted. Compared against the org's notice rules.
+  noticePostedAt     DateTime?
+  /// When the agenda became visible on the public portal. Null = not public.
+  agendaPublishedAt  DateTime?
+  cancelledReason    String?
+  agendaItems        AgendaItem[]
+  attendance         Attendance[]
+  minutes            Minutes?        @relation("MinutesOfMeeting")
+  minutesApproved    Minutes[]       @relation("MinutesApprovedAt")
+  publicComments     PublicComment[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@index([bodyId, startsAt])
+  @@index([startsAt])
+}
+
+// ---------------------------------------------------------------------------
+// 3. What they decide
+// ---------------------------------------------------------------------------
+
+enum AgendaSection {
+  CALL_TO_ORDER
+  ROLL_CALL
+  PLEDGE
+  APPROVAL_OF_AGENDA
+  APPROVAL_OF_MINUTES
+  PUBLIC_COMMENT
+  CONSENT
+  PRESENTATIONS
+  PUBLIC_HEARINGS
+  UNFINISHED_BUSINESS
+  NEW_BUSINESS
+  REPORTS
+  CLOSED_SESSION
+  ADJOURNMENT
+}
+
+enum AgendaItemKind {
+  ACTION
+  DISCUSSION
+  INFORMATION
+  CEREMONIAL
+}
+
+model AgendaItem {
+  id                 String          @id @default(cuid())
+  meetingId          String
+  meeting            Meeting         @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  section            AgendaSection
+  /// Order within the section.
+  position           Int
+  /// Printed item number, e.g. "7.B". Generated when the agenda is published.
+  number             String?
+  kind               AgendaItemKind  @default(ACTION)
+  title              String
+  summary            String?
+  recommendedAction  String?
+  fiscalImpact       String?
+  presenter          String?
+  /// Department or office that submitted the item.
+  department         String?
+  /// Closed-session items show only their title and legal citation publicly.
+  isConfidential     Boolean         @default(false)
+  legalCitation      String?
+  attachments        Attachment[]
+  motions            Motion[]
+  publicComments     PublicComment[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@index([meetingId, section, position])
+}
+
+model Attachment {
+  id            String      @id @default(cuid())
+  agendaItemId  String
+  agendaItem    AgendaItem  @relation(fields: [agendaItemId], references: [id], onDelete: Cascade)
+  title         String
+  url           String
+  mimeType      String?
+  sizeBytes     Int?
+  isPublic      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+}
+
+enum MotionResult {
+  PENDING
+  PASSED
+  FAILED
+  TABLED
+  WITHDRAWN
+}
+
+model Motion {
+  id            String        @id @default(cuid())
+  agendaItemId  String
+  agendaItem    AgendaItem    @relation(fields: [agendaItemId], references: [id], onDelete: Cascade)
+  text          String
+  movedById     String?
+  movedBy       Person?       @relation("MovedBy", fields: [movedById], references: [id])
+  secondedById  String?
+  secondedBy    Person?       @relation("SecondedBy", fields: [secondedById], references: [id])
+  result        MotionResult  @default(PENDING)
+  /// Votes required to pass when more than a simple majority (e.g. 2/3 for some actions).
+  requiredVotes Int?
+  votes         VoteRecord[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+enum VoteChoice {
+  YES
+  NO
+  ABSTAIN
+  RECUSED
+  ABSENT
+}
+
+model VoteRecord {
+  id        String      @id @default(cuid())
+  motionId  String
+  motion    Motion      @relation(fields: [motionId], references: [id], onDelete: Cascade)
+  personId  String
+  person    Person      @relation(fields: [personId], references: [id])
+  choice    VoteChoice
+  createdAt DateTime    @default(now())
+
+  @@unique([motionId, personId])
+}
+
+// ---------------------------------------------------------------------------
+// 4. The record
+// ---------------------------------------------------------------------------
+
+enum AttendanceStatus {
+  PRESENT
+  REMOTE
+  ABSENT
+  EXCUSED
+  LATE
+}
+
+model Attendance {
+  id        String            @id @default(cuid())
+  meetingId String
+  meeting   Meeting           @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  personId  String
+  person    Person            @relation(fields: [personId], references: [id])
+  status    AttendanceStatus
+  arrivedAt DateTime?
+  createdAt DateTime          @default(now())
+
+  @@unique([meetingId, personId])
+}
+
+enum MinutesStatus {
+  DRAFT
+  APPROVED
+}
+
+model Minutes {
+  id                   String         @id @default(cuid())
+  meetingId            String         @unique
+  meeting              Meeting        @relation("MinutesOfMeeting", fields: [meetingId], references: [id], onDelete: Cascade)
+  status               MinutesStatus  @default(DRAFT)
+  /// Narrative minutes in Markdown. Votes and attendance render from structured data.
+  body                 String
+  approvedAt           DateTime?
+  /// The later meeting at which these minutes were approved.
+  approvedAtMeetingId  String?
+  approvedAtMeeting    Meeting?       @relation("MinutesApprovedAt", fields: [approvedAtMeetingId], references: [id])
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+}
+
+enum CommentPosition {
+  SUPPORT
+  OPPOSE
+  NEUTRAL
+}
+
+enum CommentStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+/// Written public comment submitted through the portal. Held as PENDING until
+/// the clerk accepts it into the record.
+model PublicComment {
+  id            String           @id @default(cuid())
+  meetingId     String
+  meeting       Meeting          @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  agendaItemId  String?
+  agendaItem    AgendaItem?      @relation(fields: [agendaItemId], references: [id], onDelete: SetNull)
+  name          String
+  email         String?
+  city          String?
+  position      CommentPosition  @default(NEUTRAL)
+  body          String
+  status        CommentStatus    @default(PENDING)
+  submittedAt   DateTime         @default(now())
+  reviewedAt    DateTime?
+
+  @@index([meetingId, status])
+}
